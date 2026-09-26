@@ -1,1 +1,68 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>建筑抗震鉴定与加固排序</title><style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;color:#17212b}pre{background:#f4f7f9;padding:1rem;overflow:auto}button{padding:.55rem 1rem}</style></head><body><h1>建筑抗震鉴定与加固排序</h1><p>依据结构、用途、人员密度和历史缺陷生成鉴定与加固优先级</p><p>风险分值和人员密度共同影响排序；审核通过前必须完成评估、设计和施工证据登记。</p><button onclick="loadItems()">刷新列表</button><pre id="out">使用X-Actor和X-Role请求头调用接口。</pre><script>async function loadItems(){const r=await fetch('/api/items',{headers:{'X-Actor':'demo','X-Role':'viewer'}});document.getElementById('out').textContent=JSON.stringify(await r.json(),null,2)}</script></body></html>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>建筑抗震鉴定与加固排序 · 今日升级队列</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;max-width:1000px;margin:2rem auto;padding:0 1rem;color:#17212b}
+h1{margin-bottom:.25rem}.sub{color:#5b6b7b;margin-top:0}
+table{border-collapse:collapse;width:100%;margin-top:1rem;font-size:.95rem}
+th,td{border:1px solid #dde4ea;padding:.5rem .7rem;text-align:left}
+th{background:#f4f7f9}
+tr.esc td{background:#fdecec}
+.badge{display:inline-block;padding:.15rem .55rem;border-radius:1rem;font-size:.8rem}
+.badge.esc{background:#d92c2c;color:#fff}
+.badge.ok{background:#dcefe2;color:#1c6b36}
+.over{color:#d92c2c;font-weight:600}
+button{padding:.55rem 1rem;margin-top:1rem}
+pre{background:#f4f7f9;padding:1rem;overflow:auto;font-size:.8rem;max-height:300px}
+.muted{color:#8392a0;font-size:.85rem}
+</style>
+</head>
+<body>
+<h1>今日升级队列</h1>
+<p class="sub">按风险分、人员密度与未关闭事项数量排分，分高者靠前；同分按登记顺序排列。超处置时限自动升级。</p>
+<table>
+<thead><tr><th>名次</th><th>编号</th><th>标题</th><th>风险等级</th><th>分数</th><th>人员密度</th><th>未关闭事项</th><th>升级状态</th><th>剩余时限</th></tr></thead>
+<tbody id="queue"><tr><td colspan="9" class="muted">加载中…</td></tr></tbody>
+</table>
+<button onclick="loadQueue()">刷新队列</button>
+<button onclick="loadItems()">查看原列表接口</button>
+<pre id="out"></pre>
+<script>
+const HEADERS={'X-Actor':'demo','X-Role':'viewer'};
+function fmtHours(v){return (v>0?'+':'')+Number(v).toFixed(1)+' 小时';}
+async function loadQueue(){
+  const r=await fetch('/api/today-queue',{headers:HEADERS});
+  const data=await r.json();
+  document.getElementById('out').textContent=JSON.stringify(data,null,2);
+  const tbody=document.getElementById('queue');
+  const rows=data.queue||[];
+  if(!rows.length){tbody.innerHTML='<tr><td colspan="9" class="muted">今日暂无待处理事项。</td></tr>';return;}
+  tbody.innerHTML=rows.map(function(it){
+    const esc=it.escalation_status==='escalated';
+    const remain=esc?('<span class="over">已超时 '+Number(it.overdue_hours).toFixed(1)+' 小时</span>')
+                    :('剩余 '+Number(it.remaining_hours).toFixed(1)+' 小时');
+    return '<tr class="'+(esc?'esc':'')+'">'
+      +'<td>'+it.rank+'</td>'
+      +'<td>SR-'+it.id+'</td>'
+      +'<td>'+escapeHtml(it.title)+'</td>'
+      +'<td>'+it.severity+'</td>'
+      +'<td>'+it.score+'</td>'
+      +'<td>'+it.quantity+'/'+it.threshold+'</td>'
+      +'<td>'+it.open_records+'</td>'
+      +'<td><span class="badge '+(esc?'esc':'ok')+'">'+(esc?'已升级':'未超时')+'</span></td>'
+      +'<td>'+remain+'</td>'
+      +'</tr>';
+  }).join('');
+}
+async function loadItems(){
+  const r=await fetch('/api/items',{headers:HEADERS});
+  document.getElementById('out').textContent=JSON.stringify(await r.json(),null,2);
+}
+function escapeHtml(s){return String(s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+loadQueue();
+</script>
+</body>
+</html>

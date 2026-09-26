@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from .audit import make_entry, utc_now
 from .domain import ConflictError, NotFoundError
-from .rules import ID_PREFIX, STATES
+from .rules import ID_PREFIX, STATES, TERMINAL_STATES
 
 
 class Repository:
@@ -65,6 +65,8 @@ class Repository:
                     entry_hash TEXT NOT NULL UNIQUE,
                     created_at TEXT NOT NULL
                 );
+                CREATE UNIQUE INDEX IF NOT EXISTS ux_audit_escalation
+                    ON audit_events(entity_type, entity_id) WHERE action='escalate';
             """)
 
     @staticmethod
@@ -106,6 +108,22 @@ class Repository:
         with self._lock:
             rows = self.conn.execute(sql, params).fetchall()
         return [self._item(row) for row in rows]
+
+    def list_active_items(self) -> List[Dict[str, Any]]:
+        placeholders = ",".join("?" for _ in TERMINAL_STATES)
+        with self._lock:
+            rows = self.conn.execute(
+                f"SELECT * FROM items WHERE status NOT IN ({placeholders}) ORDER BY id",
+                tuple(TERMINAL_STATES),
+            ).fetchall()
+        return [self._item(row) for row in rows]
+
+    def open_record_counts(self) -> Dict[int, int]:
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT item_id, COUNT(*) AS n FROM records WHERE status='open' GROUP BY item_id"
+            ).fetchall()
+        return {int(row["item_id"]): int(row["n"]) for row in rows}
 
     def transition_item(self, item_id: int, target: str, expected_version: int,
                         actor: str) -> Dict[str, Any]:
@@ -175,6 +193,24 @@ class Repository:
             event_id = int(cur.lastrowid)
         event["id"] = event_id
         return event
+
+    def has_audit_event(self, action: str, entity_type: str, entity_id: int) -> bool:
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT 1 FROM audit_events WHERE action=? AND entity_type=? AND entity_id=? LIMIT 1",
+                (action, entity_type, entity_id),
+            ).fetchone()
+        return row is not None
+
+    def append_audit_once(self, action: str, entity_type: str, entity_id: int,
+                          actor: str, detail: dict) -> Optional[Dict[str, Any]]:
+        """写入升级审计；同事项已存在则不重复写入（含并发竞争）。"""
+        if self.has_audit_event(action, entity_type, entity_id):
+            return None
+        try:
+            return self.append_audit(action, entity_type, entity_id, actor, detail)
+        except sqlite3.IntegrityError:
+            return None
 
     def list_audit(self, entity_id: Optional[int] = None) -> List[Dict[str, Any]]:
         sql = "SELECT * FROM audit_events"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 from .domain import ensure_role, normalize_severity, require_number, require_text
 from .repository import Repository
@@ -8,6 +9,8 @@ from .rules import (AUDIT_ROLES, CREATE_ROLES, ENTITY, RECORD_ROLES, TITLE,
                     VIEW_ROLES, completion_blockers, escalation_required,
                     priority_score, response_deadline_hours, role_for_transition,
                     validate_transition)
+
+ESCALATION_ACTION = "escalate"
 
 
 class Service:
@@ -82,6 +85,59 @@ class Service:
     def list_items(self, role: str, status: Optional[str] = None) -> list:
         self._view(role)
         return [self.enrich(item) for item in self.repository.list_items(status)]
+
+    def today_queue(self, role: str, actor: Optional[str] = None,
+                    now: Optional[datetime] = None) -> List[Dict[str, Any]]:
+        """今日升级队列：按风险分、人员密度和未关闭事项数量计分排序，
+        超处置时限的事项进入升级（同项只写一次审计），终态事项不再出现。"""
+        self._view(role)
+        moment = now or datetime.now(timezone.utc)
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        actor = (actor or "").strip() or "system"
+        open_counts = self.repository.open_record_counts()
+        queue = []
+        for item in self.repository.list_active_items():
+            open_records = open_counts.get(item["id"], 0)
+            score = priority_score(
+                item["severity"], item["quantity"], item["threshold"], open_records)
+            deadline_hours = response_deadline_hours(
+                item["severity"], item["quantity"], item["threshold"])
+            elapsed = (moment - self._parse_ts(item["created_at"])).total_seconds() / 3600.0
+            remaining_hours = round(deadline_hours - elapsed, 2)
+            overdue_hours = max(0.0, round(elapsed - deadline_hours, 2))
+            escalated = elapsed > deadline_hours
+            already_escalated = self.repository.has_audit_event(
+                ESCALATION_ACTION, ENTITY, item["id"])
+            if escalated and not already_escalated:
+                self.repository.append_audit_once(
+                    ESCALATION_ACTION, ENTITY, item["id"], actor, {
+                        "score": score, "deadline_hours": deadline_hours,
+                        "overdue_hours": overdue_hours, "open_records": open_records,
+                    })
+                already_escalated = True
+            result = self.enrich(item)
+            result.update({
+                "rank": 0,
+                "score": score,
+                "open_records": open_records,
+                "escalated": escalated,
+                "escalation_status": "escalated" if escalated else "within_deadline",
+                "remaining_hours": remaining_hours,
+                "overdue_hours": overdue_hours if escalated else 0,
+            })
+            queue.append(result)
+        queue.sort(key=lambda row: (-row["score"], row["id"]))
+        for index, row in enumerate(queue, start=1):
+            row["rank"] = index
+        return queue
+
+    @staticmethod
+    def _parse_ts(value: str) -> datetime:
+        parsed = datetime.fromisoformat(value)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
 
     def list_records(self, item_id: int, role: str) -> list:
         self._view(role)

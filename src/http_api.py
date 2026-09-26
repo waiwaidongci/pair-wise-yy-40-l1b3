@@ -80,6 +80,9 @@ def make_handler(service: Service, static_dir: str):
                     self._json(200, {"status": "ok"})
                 elif path == "/":
                     self._html(root / "index.html")
+                elif path == "/api/today-queue" or path == "/api/queue":
+                    actor, role = self._identity()
+                    self._json(200, {"queue": service.today_queue(role, actor)})
                 elif path == "/api/items":
                     actor, role = self._identity()
                     del actor
