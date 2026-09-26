@@ -84,6 +84,12 @@ def make_handler(service: Service, static_dir: str):
                     actor, role = self._identity()
                     del actor
                     self._json(200, {"items": service.list_items(role)})
+                elif path == "/api/queue":
+                    actor, role = self._identity()
+                    del actor
+                    params = parse_qs(urlparse(self.path).query)
+                    now = params.get("now", [None])[0]
+                    self._json(200, {"queue": service.queue(role, now)})
                 elif path.startswith("/api/items/") and path.endswith("/records"):
                     item_id = int(path.split("/")[3])
                     actor, role = self._identity()

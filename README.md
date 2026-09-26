@@ -26,6 +26,7 @@ python3 app.py --db ./data.db --port 8317
 
 - `GET /health`
 - `GET /api/items`
+- `GET /api/queue`，今日升级队列
 - `POST /api/items`
 - `GET /api/items/{id}`
 - `POST /api/items/{id}/records`
@@ -33,6 +34,15 @@ python3 app.py --db ./data.db --port 8317
 - `GET /api/audit`
 
 允许角色：assessor, structural_engineer, review_board, viewer。风险分值和人员密度共同影响排序；审核通过前必须完成评估、设计和施工证据登记。
+
+## 今日升级队列
+
+`GET /api/queue`只返回未办结（accepted/rejected以外）的项目，页面打开即展示。每项给出`rank`、`score`、`escalated`、`overdue_hours`和`remaining_hours`，同时保留`priority`、`deadline_hours`、`escalation_required`等既有字段：
+
+- 分数按风险分（severity）、人员密度（quantity/threshold）和未关闭事项数量计算，分高靠前，同分按登记顺序（created_at、id）排。
+- 超过处置时限（`deadline_hours`）的项目进入升级：`escalated=true`并返回已超时小时数；否则给出剩余时限小时数。
+- 升级时写入一条`escalate`审计，同项只写一次，重复生成队列不重复记录；项目办结后不再出现在队列中。
+- 支持可选的`?now=ISO时间`参数用于演示和测试。
 
 ## 测试
 

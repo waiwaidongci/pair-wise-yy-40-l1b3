@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from .audit import make_entry, utc_now
 from .domain import ConflictError, NotFoundError
-from .rules import ID_PREFIX, STATES
+from .rules import ID_PREFIX, STATES, TERMINAL_STATES
 
 
 class Repository:
@@ -107,6 +107,18 @@ class Repository:
             rows = self.conn.execute(sql, params).fetchall()
         return [self._item(row) for row in rows]
 
+    def list_active_items(self) -> List[Dict[str, Any]]:
+        marks = ",".join("?" for _ in TERMINAL_STATES)
+        sql = f"""SELECT i.*, COALESCE(SUM(CASE WHEN r.status='open' THEN 1 ELSE 0 END),0)
+                     AS open_records
+                  FROM items i LEFT JOIN records r ON r.item_id = i.id
+                  WHERE i.status NOT IN ({marks})
+                  GROUP BY i.id
+                  ORDER BY i.created_at, i.id"""
+        with self._lock:
+            rows = self.conn.execute(sql, tuple(sorted(TERMINAL_STATES))).fetchall()
+        return [self._item(row) for row in rows]
+
     def transition_item(self, item_id: int, target: str, expected_version: int,
                         actor: str) -> Dict[str, Any]:
         now = utc_now()
@@ -160,20 +172,35 @@ class Repository:
     def append_audit(self, action: str, entity_type: str, entity_id: int,
                      actor: str, detail: dict) -> Dict[str, Any]:
         with self._lock, self.conn:
-            row = self.conn.execute(
-                "SELECT entry_hash FROM audit_events ORDER BY id DESC LIMIT 1"
+            return self._append_audit_locked(action, entity_type, entity_id, actor, detail)
+
+    def append_audit_once(self, action: str, entity_type: str, entity_id: int,
+                          actor: str, detail: dict) -> Optional[Dict[str, Any]]:
+        with self._lock, self.conn:
+            exists = self.conn.execute(
+                """SELECT 1 FROM audit_events
+                   WHERE action=? AND entity_type=? AND entity_id=? LIMIT 1""",
+                (action, entity_type, entity_id),
             ).fetchone()
-            previous = row["entry_hash"] if row else "GENESIS"
-            event = make_entry(action, entity_type, entity_id, actor, detail, previous)
-            cur = self.conn.execute(
-                """INSERT INTO audit_events(action, entity_type, entity_id, actor, detail,
-                   previous_hash, entry_hash, created_at) VALUES(?,?,?,?,?,?,?,?)""",
-                (event["action"], event["entity_type"], event["entity_id"], event["actor"],
-                 json.dumps(event["detail"], ensure_ascii=False, sort_keys=True),
-                 event["previous_hash"], event["entry_hash"], event["created_at"]),
-            )
-            event_id = int(cur.lastrowid)
-        event["id"] = event_id
+            if exists is not None:
+                return None
+            return self._append_audit_locked(action, entity_type, entity_id, actor, detail)
+
+    def _append_audit_locked(self, action: str, entity_type: str, entity_id: int,
+                             actor: str, detail: dict) -> Dict[str, Any]:
+        row = self.conn.execute(
+            "SELECT entry_hash FROM audit_events ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        previous = row["entry_hash"] if row else "GENESIS"
+        event = make_entry(action, entity_type, entity_id, actor, detail, previous)
+        cur = self.conn.execute(
+            """INSERT INTO audit_events(action, entity_type, entity_id, actor, detail,
+               previous_hash, entry_hash, created_at) VALUES(?,?,?,?,?,?,?,?)""",
+            (event["action"], event["entity_type"], event["entity_id"], event["actor"],
+             json.dumps(event["detail"], ensure_ascii=False, sort_keys=True),
+             event["previous_hash"], event["entry_hash"], event["created_at"]),
+        )
+        event["id"] = int(cur.lastrowid)
         return event
 
     def list_audit(self, entity_id: Optional[int] = None) -> List[Dict[str, Any]]:

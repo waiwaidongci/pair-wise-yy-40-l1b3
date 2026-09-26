@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from .domain import ensure_role, normalize_severity, require_number, require_text
@@ -82,6 +83,52 @@ class Service:
     def list_items(self, role: str, status: Optional[str] = None) -> list:
         self._view(role)
         return [self.enrich(item) for item in self.repository.list_items(status)]
+
+    def queue(self, role: str, now: Any = None) -> list:
+        self._view(role)
+        moment = self._as_moment(now)
+        entries = []
+        for item in self.repository.list_active_items():
+            score = priority_score(item["severity"], item["quantity"],
+                                   item["threshold"], item["open_records"])
+            deadline = response_deadline_hours(item["severity"], item["quantity"],
+                                               item["threshold"])
+            created = datetime.fromisoformat(item["created_at"])
+            remaining_seconds = deadline * 3600 - (moment - created).total_seconds()
+            escalated = remaining_seconds < 0
+            overdue_hours = int(-remaining_seconds // 3600) if escalated else 0
+            remaining_hours = int(remaining_seconds // 3600) if remaining_seconds > 0 else 0
+            if escalated:
+                self.repository.append_audit_once("escalate", ENTITY, item["id"],
+                                                  "system", {
+                                                      "score": score,
+                                                      "deadline_hours": deadline,
+                                                      "overdue_hours": overdue_hours,
+                                                  })
+            entry = self.enrich(item)
+            entry.update({
+                "score": score,
+                "escalated": escalated,
+                "overdue_hours": overdue_hours,
+                "remaining_hours": remaining_hours,
+            })
+            entries.append(entry)
+        entries.sort(key=lambda entry: -entry["score"])
+        for rank, entry in enumerate(entries, 1):
+            entry["rank"] = rank
+        return entries
+
+    @staticmethod
+    def _as_moment(now: Any) -> datetime:
+        if now is None:
+            return datetime.now(timezone.utc)
+        if isinstance(now, str):
+            now = datetime.fromisoformat(now)
+        if not isinstance(now, datetime):
+            raise ValueError("now必须是ISO时间字符串")
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        return now
 
     def list_records(self, item_id: int, role: str) -> list:
         self._view(role)
